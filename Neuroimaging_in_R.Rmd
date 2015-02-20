@@ -11,7 +11,7 @@ output:
 ```{r knit-setup, echo=FALSE, results='hide', eval=TRUE}
 rm(list=ls())
 library(knitr)
-setwd("~/Dropbox/neuroimagingforstatisticians/manuscript/structural_talk/")
+setwd("~/Dropbox/Presentations/structural_talk/")
 options(fsl.path = "/usr/local/fsl/")
 opts_chunk$set(cache = TRUE, comment = "")
 hook1 <- function(x){ gsub("```\n*```r*\n*", "", x) }
@@ -170,7 +170,8 @@ Using FSL BET for the baseline T1 image:
 ```{r bet}
 library(fslr)
 ss_t1 = fslbet(base_t1, retimg = TRUE, opts = "-f 0.1 -v", 
-               betcmd = "bet2", outfile = "Brain_Mask")
+               betcmd = "bet2", outfile = "SS_Image")
+fslbin(file = "SS_Image", outfile = "Brain_Mask")
 ```
 
 - `fslbet` - the command
@@ -258,3 +259,58 @@ preprocess_mri_across(
 4. extrantsr - helper functions for ANTsR
     + wrapper functions for preprocessing
 
+## Bonus: Cutting Image function
+
+```{r cut_img}
+cut_img = function(img, breaks, cols, include.lowest = TRUE, plot.image=TRUE, ...){
+  cuts = cut(x=c(img), breaks=breaks, include.lowest = include.lowest)
+  cut_img = niftiarr(img, as.numeric(cuts))
+  ybreaks= sort(unique(as.numeric(cuts)))
+  ybreaks = c(0, ybreaks[!is.na(ybreaks)])
+  lab = levels(cuts)
+  if (plot.image){
+    ortho2(img, cut_img, ybreaks = ybreaks, col.y = cols, 
+         legend = lab, 
+         leg.col = cols,
+         ... )
+  }
+  return(list(cut_img = cut_img, ybreaks= ybreaks, legend = lab, cols= cols))
+}
+```
+
+## Bonus: Cutting Image function
+
+Creating the quantiles of the skull-stripped image:
+```{r cut_img_make}
+img = robust_window(ss_t1)
+q = quantile(c(img[img > 0]), prob = seq(0, 1, by=0.25))
+breaks = unique(q)
+cols = alpha(c("blue", "yellow", "orange", "red"), 0.5)
+```
+
+## Bonus: Cutting Image function
+```{r cut_img_plot, dependson="cut_img"}
+cimg = cut_img(ss_t1, breaks= breaks, cols = cols)
+```
+
+## Dropping out top quantile:
+
+```{r cut_img_plot2, dependson="cut_img"}
+cimg2 = cimg$cut_img
+cimg2[ cimg2 == 4] = NA
+cimg2 = cal_img(cimg2)
+ortho2(img, cimg2, ybreaks = cimg$ybreaks, col.y = cimg$cols, 
+       legend = cimg$legend, 
+       leg.col = cimg$cols)
+```
+
+## Dropping out lower quantile:
+
+```{r cut_img_plot3, dependson="cut_img"}
+cimg2 = cimg$cut_img
+cimg2[ cimg2 == 1] = NA
+cimg2 = cal_img(cimg2)
+ortho2(img, cimg2, ybreaks = cimg$ybreaks, col.y = cimg$cols, 
+       legend = cimg$legend, 
+       leg.col = cimg$cols)
+```
