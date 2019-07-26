@@ -1,0 +1,317 @@
+---
+title: "Neuroimaging in R"
+author: "John Muschelli"
+date: "February 19, 2015"
+output:
+  ioslides_presentation:
+    fig_width: 4
+    fig_height: 4
+---
+
+```{r knit-setup, echo=FALSE, results='hide', eval=TRUE}
+rm(list=ls())
+library(knitr)
+setwd("~/Dropbox/Presentations/Neuroimaging_in_R/")
+options(fsl.path = "/usr/local/fsl/")
+opts_chunk$set(cache = TRUE, comment = "")
+hook1 <- function(x){ gsub("```\n*```r*\n*", "", x) }
+hook2 <- function(x){ gsub("```\n+```\n", "", x) }
+knit_hooks$set(document = hook2)
+```
+
+## Introduction: Packages
+
+- oro.nifti: read/write data, the nifti object
+- fslr: process data (need FSL for most of the fun)
+- ANTsR: process data (need cmake)
+- extrantsr: makes ANTsR easier (need ANTsR)
+
+## Install these packages
+
+```{r, eval=FALSE}
+install.packages("oro.nifti")
+install.packages("devtools")
+devtools::install_github("stnava/ANTsR") # takes long
+devtools::install_github("muschellij2/extrantsr")
+devtools::install_github("muschellij2/fslr")
+```
+
+
+## Files
+
+Multi-modal dataset from SuBLIME (thanks Elizabeth), raw and unprocessed (other than NIfTI conversion).  
+
+- 4 modalities: T1, T2, PD, FLAIR
+- 2 time points Baseline and Followup
+
+```{r, echo=FALSE}
+files = c(base_t1="01-Baseline_T1.nii.gz", 
+          base_t2="01-Baseline_T2.nii.gz",
+          base_pd="01-Baseline_PD.nii.gz", 
+          base_flair="01-Baseline_FLAIR.nii.gz", 
+          f_t1= "01-Followup_T1.nii.gz", 
+          f_t2= "01-Followup_T2.nii.gz", 
+          f_pd = "01-Followup_PD.nii.gz", 
+          f_flair="01-Followup_FLAIR.nii.gz")
+```
+
+```{r}
+files
+```
+
+## Read in the Files!
+
+Let's read in the baseline T1.  The `readNIfTI` function is the workhorse:
+```{r read_t1, message=FALSE}
+library(oro.nifti)
+base_t1 = readNIfTI(files["base_t1"])
+```
+
+
+```{r read_t2_err, error=TRUE}
+base_t2 = readNIfTI(files["base_t2"])
+```
+
+```{r read_t2}
+base_t2 = readNIfTI(files["base_t2"], reorient = FALSE)
+```
+
+## An aside on `reorient` in `readNIfTI`
+
+Arguments for `readNIfTI`:
+```{r}
+args(readNIfTI)
+```
+The default is `reorient = TRUE` but this fails **a lot**, especially when the transformation matrix is not diagonal.
+
+##  {.flexbox .vcenter}
+<div style='font-size: 35pt;'>
+Use ``reorient=FALSE``
+</div>
+
+## Quick Plots
+
+```{r ortho2, message=FALSE}
+orthographic(base_t1)
+```
+
+## Quick Plots
+
+```{r ortho, message=FALSE}
+library(fslr)
+fslr::ortho2(base_t1, mfrow= c(1, 3), add.orient = FALSE)
+```
+
+## Creating new nifti objects
+
+''One image'' operations return `nifti` objects:
+```{r , message=FALSE}
+arr = base_t1 >= 40
+class(arr)
+```
+
+## Creating new nifti objects: Copy and Replace
+
+''Two image'' operations return `array`.
+Copy `nifti` object, replace data:
+```{r bad_cal_img, message=FALSE}
+arr = base_t1 >= 40 & base_t1 < 60
+class(arr)
+mask = base_t1
+mask@.Data = arr
+class(mask)
+```
+
+
+## Creating new nifti objects: Copy and Replace
+
+```{r bad_cal_img_plot, message=FALSE}
+ortho2(mask)
+```
+
+## Creating new nifti objects: Copy and Replace
+
+Must reset the `cal_min` and `cal_max` values, use the `fslr` function `cal_img`:
+
+```{r cal_img, message=FALSE}
+mask = cal_img(mask)
+ortho2(mask)
+```
+
+## Use `cal_img` with `writeNIfTI`
+
+`cal_img` is also useful for writing `nifti` objects.
+
+If the range of the data isn't `c(cal_min, cal_max)`, then the `writeNIfTI` errors:
+```{r, error = TRUE}
+mask@.Data[5] = 3
+writeNIfTI(mask, filename = tempfile())
+```
+
+
+## Creating new nifti objects: `niftiarr`
+
+Use `niftiarr` to create new `nifti` objects from old one:
+```{r niftiarr, message=FALSE}
+mask = niftiarr(base_t1, base_t1 >= 40 & base_t1 < 60)
+class(mask)
+```
+
+## Creating new nifti objects: `niftiarr`
+
+```{r niftiarr2, message=FALSE}
+ortho2(mask)
+```
+
+## Skull Stripping
+
+Using FSL BET for the baseline T1 image:
+
+```{r bet}
+library(fslr)
+ss_t1 = fslbet(base_t1, retimg = TRUE, opts = "-f 0.1 -v", 
+               betcmd = "bet2", outfile = "SS_Image")
+fslbin(file = "SS_Image", outfile = "Brain_Mask")
+```
+
+- `fslbet` - the command
+- `retimg` - Return an image
+- `opts` - options of bash `bet` command
+- `betcmd` - can use `bet2` or `bet` (wrapper for `bet2`)
+
+## Overlaying
+
+`orthographic` allows for overlays, but must set voxels to `NA` we don't wish to see (*NOT ZERO*):
+```{r overlay, message=FALSE}
+library(scales)
+mask = cal_img(ss_t1 > 0)
+mask[mask == 0] = NA
+ortho2(base_t1, y=mask, col.y=alpha("red", 0.5))
+```
+
+## Bias Field Correction
+
+`bias_correct` from `extrantsr` package:
+```{r}
+library(ANTsR)
+library(extrantsr)
+n3_t1 = bias_correct(file = base_t1, correction = "N3", retimg=TRUE)
+n4_t1 = bias_correct(file = base_t1, correction = "N4", retimg=TRUE)
+```
+
+
+## Registration
+
+`extrantsr::ants_regwrite` will take in a file and a template, registre the file to the template, and can perform the reverse operation on another image.
+
+```{r, eval=FALSE}
+reg_base_t2 = ants_regwrite(filename = files["base_t2"],  
+                            template.file = files['base_t1'],
+                            retimg= TRUE,
+                            typeofTransform = "Rigid", 
+                            remove.warp = TRUE)
+```
+
+
+## Preprocess MRI: within a visit
+
+`extrantsr::preprocess_mri_within` will do N3/N4 Correction, skull strip (or mask), and register to the first scan.
+
+```{r, eval=FALSE}
+proc_images = preprocess_mri_within(
+  files = files[c("base_t1", "base_t2", "base_pd", "base_flair")],
+    retimg = TRUE, maskfile = "Brain_Mask.nii.gz")
+```
+
+## Preprocess MRI: across visits
+
+`preprocess_mri_across` combines `preprocess_mri_within` and `ants_regwrite`
+```{r, eval=FALSE}
+outfiles = gsub("[.]nii", '_process.nii', files)
+preprocess_mri_across(
+  baseline_files = files[c("base_t1", "base_t2", "base_pd", "base_flair")],
+    followup_files = files[c("f_t1", "f_t2", "f_pd", "f_flair")],
+    baseline_outfiles = outfiles[c("base_t1", "base_t2", "base_pd", "base_flair")],
+    followup_outfiles = outfiles[c("f_t1", "f_t2", "f_pd", "f_flair")],
+  maskfile = "Brain_Mask.nii.gz")
+```
+
+
+## Other useful functions from fslr
+
+- `window_img` - set min and max values of image (good for plotting)
+- `drop_img_dim` - drop dimension if is dimension is 1
+- `mask_img` - mask image with an array/nifti object
+- `robust_window` - quantile the image then use `window_img` (take out large values)
+- `fslhd` and `fslval` can get information from an image without having to read it in
+- `checkimg` - checks if an image is character, writes `nifti` to tempfile, returns character
+- `check_nifti` - checks if an image is `nifti`, reads filename, returns `nifti`
+
+## Overview
+
+1. `oro.nifti` - reading/writing nifti objects 
+2. `ANTsR`
+    + bias field corrrection
+    + registration: linear, non-linear (symmetric)
+3. `fslr`
+    + can perform image operations from FSL
+    + has helper functions for `nifti` objects
+4. extrantsr - helper functions for ANTsR
+    + wrapper functions for preprocessing
+
+## Bonus: Cutting Image function
+
+```{r cut_img}
+cut_img = function(img, breaks, cols, include.lowest = TRUE, plot.image=TRUE, ...){
+  cuts = cut(x=c(img), breaks=breaks, include.lowest = include.lowest)
+  cut_img = niftiarr(img, as.numeric(cuts))
+  ybreaks= sort(unique(as.numeric(cuts)))
+  ybreaks = c(0, ybreaks[!is.na(ybreaks)])
+  lab = levels(cuts)
+  if (plot.image){
+    ortho2(img, cut_img, ybreaks = ybreaks, col.y = cols, 
+         legend = lab, 
+         leg.col = cols,
+         addlegend = TRUE, leg.cex = 1, leg.y= 50,
+         ... )
+  }
+  return(list(cut_img = cut_img, ybreaks= ybreaks, legend = lab, cols= cols))
+}
+```
+
+## Bonus: Cutting Image function
+
+Creating the quantiles of the skull-stripped image:
+```{r cut_img_make}
+img = robust_window(ss_t1)
+q = quantile(c(img[img > 0]), prob = seq(0, 1, by=0.25))
+breaks = unique(q)
+cols = alpha(c("blue", "yellow", "orange", "red"), 0.5)
+```
+
+## Bonus: Cutting Image function
+```{r cut_img_plot, dependson="cut_img"}
+cimg = cut_img(ss_t1, breaks= breaks, cols = cols)
+```
+
+## Dropping out top quantile:
+
+```{r cut_img_plot2, dependson="cut_img"}
+cimg2 = cimg$cut_img
+cimg2[ cimg2 == 4] = NA
+cimg2 = cal_img(cimg2)
+ortho2(img, cimg2, ybreaks = cimg$ybreaks, col.y = cimg$cols, 
+       legend = cimg$legend, 
+       leg.col = cimg$cols)
+```
+
+## Dropping out lower quantile:
+
+```{r cut_img_plot3, dependson="cut_img"}
+cimg2 = cimg$cut_img
+cimg2[ cimg2 == 1] = NA
+cimg2 = cal_img(cimg2)
+ortho2(img, cimg2, ybreaks = cimg$ybreaks, col.y = cimg$cols, 
+       legend = cimg$legend, 
+       leg.col = cimg$cols)
+```
